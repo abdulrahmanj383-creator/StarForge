@@ -183,17 +183,25 @@
     "taskDefinitions": [
       {
         "type": "starforge",
-        "required": ["task"],
+        "required": [
+          "task"
+        ],
         "properties": {
           "task": {
             "type": "string",
             "description": "The StarForge task to run (build, test, deploy)",
-            "enum": ["build", "test", "deploy"]
+            "enum": [
+              "build",
+              "test",
+              "deploy"
+            ]
           },
           "args": {
             "type": "array",
             "description": "Additional arguments to pass to the CLI",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           }
         }
       }
@@ -203,7 +211,10 @@
         "name": "starforge-build",
         "owner": "starforge",
         "source": "StarForge",
-        "fileLocation": ["relative", "${workspaceFolder}"],
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
         "pattern": [
           {
             "regexp": "^error(?:\\[(E\\d+)\\])?:\\s+(.+)$",
@@ -223,7 +234,10 @@
         "name": "starforge-warning",
         "owner": "starforge",
         "source": "StarForge",
-        "fileLocation": ["relative", "${workspaceFolder}"],
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
         "pattern": [
           {
             "regexp": "^warning(?:\\[(\\w+)\\])?:\\s+(.+)$",
@@ -251,7 +265,10 @@
         "starforge.defaultNetwork": {
           "type": "string",
           "default": "testnet",
-          "enum": ["testnet", "mainnet"],
+          "enum": [
+            "testnet",
+            "mainnet"
+          ],
           "description": "Default network to use for deploy and invoke operations."
         },
         "starforge.showJsonOutput": {
@@ -269,8 +286,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap",
-    "build:watch": "npm run build -- --watch",
+    "build": "node init && esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --sourcemap",
+    "build:watch": "node init && npm run build -- --watch",
     "compile": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
     "test": "node ./dist/test/runTests.js",
