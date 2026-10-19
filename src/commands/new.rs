@@ -7,6 +7,9 @@ use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Templates generated directly by the `new` command without a registry fetch.
+pub const BUILTIN_TEMPLATE_NAMES: &[&str] = &["hello-world", "token", "voting", "nft"];
+
 #[derive(Subcommand)]
 pub enum NewCommands {
     /// Scaffold a new Soroban smart contract project
@@ -36,6 +39,11 @@ pub enum NewCommands {
     /// Scaffold a new Stellar dApp (Vite + React)
     Dapp {
         /// Project name
+        name: String,
+    },
+    /// Scaffold a multi-contract workspace
+    Workspace {
+        /// Workspace name
         name: String,
     },
 }
@@ -74,6 +82,7 @@ pub async fn handle(cmd: NewCommands) -> Result<()> {
             }
         }
         NewCommands::Dapp { name } => scaffold_dapp(name),
+        NewCommands::Workspace { name } => scaffold_workspace(name),
     }
 }
 
@@ -171,8 +180,9 @@ async fn scaffold_contract_interactive(default_name: String) -> Result<()> {
     println!(
         "    Tests         : {}",
         if opts.include_tests {
+    let wasm_target = crate::utils::wasm_target::resolve_target(None)?;
             "yes".green()
-        } else {
+        "  starforge deploy --wasm target/{wasm_target}/release/{}.wasm",
             "no".yellow()
         }
     );
@@ -227,10 +237,7 @@ async fn scaffold_contract(
     println!("  Template: {}\n", template.cyan());
     // Built-in templates are generated in-process below and always match this
     // binary; only registry templates carry version metadata to check.
-    let is_builtin = matches!(
-        template.as_str(),
-        "hello-world" | "token" | "voting" | "nft"
-    );
+    let is_builtin = BUILTIN_TEMPLATE_NAMES.contains(&template.as_str());
     if !is_builtin {
         // Ensure selected template is compatible with current CLI version
         let entry = templates::get_template(&template).await?;
@@ -263,33 +270,53 @@ async fn scaffold_contract(
                 ));
                 return Ok(());
             }
+            templates::CompatibilityStatus::SorobanSdkIncompatible {
+                sdk_min,
+                sdk_max,
+                found_version,
+            } => {
+                let range = match (sdk_min, sdk_max) {
+                    (Some(min), Some(max)) => format!(">= {} and <= {}", min, max),
+                    (Some(min), None) => format!(">= {}", min),
+                    (None, Some(max)) => format!("<= {}", max),
+                    (None, None) => "compatible".to_string(),
+                };
+                p::error(&format!(
+                    "Template '{}' requires Soroban SDK {} but running version is {}.\nChoose a compatible template or adjust SDK version.",
+                    entry.name, range, found_version
+                ));
+                return Ok(());
+            }
         }
     }
 
     // Roll back the partially-created directory if any step below fails.
     let mut target_guard = PathCleanup::new(dir.to_path_buf());
+    let wasm_target = crate::utils::wasm_target::resolve_target(None)?;
 
     p::step(1, 4, "Creating directory structure…");
     fs::create_dir_all(dir.join("src"))?;
     fs::create_dir_all(dir.join(".cargo"))?;
 
-    p::step(2, 4, "Writing Cargo.toml…");
+    p::step(2, 4, "Writing Cargo.toml & starforge.toml…");
     fs::write(dir.join("Cargo.toml"), cargo_toml(&name, license, author))?;
-    fs::write(dir.join(".cargo/config.toml"), cargo_config())?;
+    fs::write(dir.join(".cargo/config.toml"), cargo_config(&wasm_target))?;
     fs::write(dir.join(".gitignore"), "target/\n.soroban/\n")?;
+    let starter_manifest = crate::manifest::ProjectManifest::default_starter(&name);
+    let manifest_toml = toml::to_string_pretty(&starter_manifest)?;
+    fs::write(dir.join(crate::manifest::MANIFEST_FILENAME), manifest_toml)?;
 
     p::step(3, 4, &format!("Generating '{}' contract source…", template));
     let src = match template.as_str() {
         "token" => token_template(&name),
         "voting" => voting_template(&name),
         "nft" => nft_template(&name),
+        "hello-world" => hello_world_template(&name, storage, include_tests),
         _ => {
             if let Some(custom) =
                 templates::template_source_content(&template, force_refresh).await?
             {
                 custom
-            } else if template == "hello-world" {
-                hello_world_template(&name, storage, include_tests)
             } else {
                 anyhow::bail!(
                     "Unknown template '{}'. Search available templates with `starforge new contract --search <query>`.",
@@ -301,7 +328,10 @@ async fn scaffold_contract(
     fs::write(dir.join("src/lib.rs"), src)?;
 
     p::step(4, 4, "Writing README.md…");
-    fs::write(dir.join("README.md"), readme(&name, &template, source))?;
+    fs::write(
+        dir.join("README.md"),
+        readme(&name, &template, source, &wasm_target),
+    )?;
 
     // Scaffolding completed: keep the directory.
     target_guard.commit();
@@ -320,9 +350,9 @@ async fn scaffold_contract(
     println!();
     println!("  Next steps:");
     p::info(&format!("  cd {}", name));
-    p::info("  stellar contract build");
+    p::info("  starforge contract build");
     p::info(&format!(
-        "  starforge deploy --wasm target/wasm32v1-none/release/{}.wasm",
+        "  starforge deploy --wasm target/{wasm_target}/release/{}.wasm",
         name.replace('-', "_")
     ));
     println!();
@@ -350,6 +380,9 @@ fn scaffold_dapp(name: String) -> Result<()> {
     fs::write(dir.join("src/App.jsx"), dapp_app(&name))?;
     fs::write(dir.join(".gitignore"), "node_modules/\ndist/\n")?;
     fs::write(dir.join("README.md"), dapp_readme(&name))?;
+    let starter_manifest = crate::manifest::ProjectManifest::default_starter(&name);
+    let manifest_toml = toml::to_string_pretty(&starter_manifest)?;
+    fs::write(dir.join(crate::manifest::MANIFEST_FILENAME), manifest_toml)?;
 
     println!();
     p::success(&format!("dApp '{}' scaffolded!", name));
@@ -385,6 +418,9 @@ fn cargo_toml(name: &str, license: &str, author: &str) -> String {
     } else {
         format!("authors = [\"{author}\"]\n")
     };
+    // Single source of truth for the generated-project SDK version — see
+    // `crate::utils::templates::SOROBAN_SDK_VERSION`.
+    let soroban_sdk = templates::SOROBAN_SDK_VERSION;
     format!(
         r#"[package]
 name = "{name}"
@@ -395,10 +431,10 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-soroban-sdk = "21.0.0"
+soroban-sdk = "{soroban_sdk}"
 
 [dev-dependencies]
-soroban-sdk = {{ version = "21.0.0", features = ["testutils"] }}
+soroban-sdk = {{ version = "{soroban_sdk}", features = ["testutils"] }}
 
 [profile.release]
 opt-level = "z"
@@ -413,10 +449,10 @@ lto = true
     )
 }
 
-fn cargo_config() -> &'static str {
-    r#"[target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+multivalue,+sign-ext"]
-"#
+fn cargo_config(target: &str) -> String {
+    format!(
+        "[target.{target}]\nrustflags = [\"-C\", \"target-feature=+multivalue,+sign-ext\"]\n"
+    )
 }
 
 // ── Contract templates ────────────────────────────────────────────────────────
@@ -959,7 +995,7 @@ npm run dev
     )
 }
 
-fn readme(name: &str, template: &str, source: &str) -> String {
+fn readme(name: &str, template: &str, source: &str, wasm_target: &str) -> String {
     format!(
         r#"# {name}
 
@@ -968,7 +1004,7 @@ A Soroban smart contract scaffolded with [starforge](https://github.com/Nanle-co
 ## Build
 
 ```bash
-stellar contract build
+starforge contract build
 ```
 
 ## Test
@@ -981,7 +1017,7 @@ cargo test
 
 ```bash
 starforge deploy \
-  --wasm target/wasm32v1-none/release/{snake}.wasm \
+    --wasm target/{wasm_target}/release/{snake}.wasm \
   --network testnet
 ```
 
@@ -990,6 +1026,7 @@ Source: `{source}`
 "#,
         name = name,
         snake = name.replace('-', "_"),
+        wasm_target = wasm_target,
         template = template,
         source = source
     )
@@ -1241,9 +1278,9 @@ async fn scaffold_from_marketplace(name: String, template_name: String) -> Resul
     println!();
     println!("  Next steps:");
     p::info(&format!("  cd {}", name));
-    p::info("  stellar contract build");
+    p::info("  starforge contract build");
     p::info(&format!(
-        "  starforge deploy --wasm target/wasm32v1-none/release/{}.wasm",
+        "  starforge deploy --wasm target/{wasm_target}/release/{}.wasm",
         name.replace('-', "_")
     ));
     println!();
@@ -1514,4 +1551,244 @@ mod determinism_tests {
             }
         }
     }
+}
+// Helper to generate a multi-contract workspace
+fn scaffold_workspace(name: String) -> Result<()> {
+    let dir = Path::new(&name);
+    if dir.exists() {
+        anyhow::bail!("Directory '{}' already exists", name);
+    }
+
+    p::header(&format!("Scaffolding multi-contract workspace: {}", name));
+
+    let mut target_guard = crate::utils::PathCleanup::new(dir.to_path_buf());
+
+    p::step(1, 4, "Creating workspace structure…");
+    fs::create_dir_all(dir.join("contracts/contract-a/src"))?;
+    fs::create_dir_all(dir.join("contracts/contract-b/src"))?;
+    fs::create_dir_all(dir.join("contracts/contract-b/tests"))?;
+    fs::create_dir_all(dir.join("crates/shared-types/src"))?;
+    fs::create_dir_all(dir.join(".cargo"))?;
+
+    p::step(2, 4, "Writing workspace configuration…");
+    fs::write(dir.join("Cargo.toml"), workspace_cargo_toml())?;
+    fs::write(dir.join(".cargo/config.toml"), cargo_config())?;
+    fs::write(dir.join(".gitignore"), "target/\n.soroban/\n")?;
+
+    p::step(3, 4, "Writing crates and contracts…");
+    fs::write(
+        dir.join("crates/shared-types/Cargo.toml"),
+        shared_types_cargo_toml(),
+    )?;
+    fs::write(
+        dir.join("crates/shared-types/src/lib.rs"),
+        shared_types_lib(),
+    )?;
+
+    fs::write(
+        dir.join("contracts/contract-a/Cargo.toml"),
+        contract_a_cargo_toml(),
+    )?;
+    fs::write(
+        dir.join("contracts/contract-a/src/lib.rs"),
+        contract_a_lib(),
+    )?;
+
+    fs::write(
+        dir.join("contracts/contract-b/Cargo.toml"),
+        contract_b_cargo_toml(),
+    )?;
+    fs::write(
+        dir.join("contracts/contract-b/src/lib.rs"),
+        contract_b_lib(),
+    )?;
+    fs::write(
+        dir.join("contracts/contract-b/tests/integration.rs"),
+        workspace_integration_test(),
+    )?;
+
+    p::step(4, 4, "Writing README.md…");
+    fs::write(
+        dir.join("README.md"),
+        format!("# {}\n\nA multi-contract Soroban workspace.", name),
+    )?;
+
+    target_guard.commit();
+
+    println!();
+    p::success(&format!("Workspace '{}' scaffolded!", name));
+    p::info(&format!("cd {}", name));
+    p::info("cargo test");
+    p::info("starforge build");
+    p::info("starforge deploy --all");
+    println!();
+    Ok(())
+}
+
+fn workspace_cargo_toml() -> &'static str {
+    r#"[workspace]
+members = [
+    "contracts/*",
+    "crates/*",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+"#
+}
+
+fn shared_types_cargo_toml() -> String {
+    let sdk = templates::SOROBAN_SDK_VERSION;
+    format!(
+        r#"[package]
+name = "shared-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+soroban-sdk = "{sdk}"
+"#
+    )
+}
+
+fn shared_types_lib() -> &'static str {
+    r#"#![no_std]
+use soroban_sdk::{contracttype, Address, String};
+
+#[derive(Clone)]
+#[contracttype]
+pub struct UserConfig {
+    pub account: Address,
+    pub name: String,
+}
+"#
+}
+
+fn contract_a_cargo_toml() -> String {
+    let sdk = templates::SOROBAN_SDK_VERSION;
+    format!(
+        r#"[package]
+name = "contract-a"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = "{sdk}"
+shared-types = { path = "../../crates/shared-types" }
+
+[dev-dependencies]
+soroban-sdk = { version = "{sdk}", features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+"#
+    )
+}
+
+fn contract_a_lib() -> &'static str {
+    r#"#![no_std]
+use shared_types::UserConfig;
+use soroban_sdk::{contract, contractimpl, Env, Symbol};
+
+#[contract]
+pub struct ContractA;
+
+pub trait ContractATrait {
+    fn do_something(env: Env, config: UserConfig) -> Symbol;
+}
+
+#[contractimpl]
+impl ContractATrait for ContractA {
+    fn do_something(_env: Env, _config: UserConfig) -> Symbol {
+        soroban_sdk::symbol_short!("doneA")
+    }
+}
+"#
+}
+
+fn contract_b_cargo_toml() -> String {
+    let sdk = templates::SOROBAN_SDK_VERSION;
+    format!(
+        r#"[package]
+name = "contract-b"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = "{sdk}"
+shared-types = { path = "../../crates/shared-types" }
+contract-a = { path = "../contract-a" }
+
+[dev-dependencies]
+soroban-sdk = { version = "{sdk}", features = ["testutils"] }
+contract-a = { path = "../contract-a", features = ["testutils"] }
+"#
+    )
+}
+
+fn contract_b_lib() -> &'static str {
+    r#"#![no_std]
+use shared_types::UserConfig;
+use soroban_sdk::{contract, contractimpl, Address, Env, Symbol};
+use contract_a::ContractAClient;
+
+#[contract]
+pub struct ContractB;
+
+#[contractimpl]
+impl ContractB {
+    pub fn do_something_else(env: Env, config: UserConfig, contract_a: Address) -> Symbol {
+        let client = ContractAClient::new(&env, &contract_a);
+        client.do_something(&config);
+        soroban_sdk::symbol_short!("doneB")
+    }
+}
+"#
+}
+
+fn workspace_integration_test() -> &'static str {
+    r#"#![cfg(test)]
+use contract_a::{ContractA, ContractAClient};
+use contract_b::{ContractB, ContractBClient};
+use shared_types::UserConfig;
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+#[test]
+fn test_cross_contract() {
+    let env = Env::default();
+    
+    let contract_a_id = env.register_contract(None, ContractA);
+    let contract_b_id = env.register_contract(None, ContractB);
+    
+    let client_b = ContractBClient::new(&env, &contract_b_id);
+    
+    let config = UserConfig {
+        account: Address::generate(&env),
+        name: String::from_str(&env, "Alice"),
+    };
+    
+    let result = client_b.do_something_else(&config, &contract_a_id);
+    assert_eq!(result, soroban_sdk::symbol_short!("doneB"));
+}
+"#
+}
+fn workspace_contract_deps() -> &'static str {
+    r#"[dependencies]
+contract-a = { path = "contracts/contract-a" }
+contract-b = { path = "contracts/contract-b" }
+"#
 }
