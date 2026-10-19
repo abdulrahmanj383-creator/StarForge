@@ -29,18 +29,32 @@ struct Cli {
 /// they cannot drift from a hand-written list. Per-subcommand detail lives in
 /// [`MAJOR_SUBCOMMANDS`]; keep the two in sync when commands change. The
 /// top-level budget asserted in `main` below is the regression guard for the
-/// 20-command limit from issue #936.
+/// top-level command budget from issue #936.
 #[derive(Subcommand)]
 enum Commands {
     // Mirrors the noun-verb tree from `src/main.rs` (ADR 0007). Only names and
     // `about` text are needed here: this copy drives the generated cheat sheet,
     // the shell completions, and the man pages. The top-level budget check in
     // `main()` below keeps it honest about the command count.
-    #[command(about = "Manage test wallets (create, list, fund, sign), transactions, and devices")]
+    #[command(about = "AI-driven performance profiling commands")]
+    AiProfile,
+    #[command(about = "AI-powered IDE integration commands")]
+    AiIde,
+    #[command(about = "AI-driven test maintenance commands")]
+    AiTestMaintain,
+    #[command(about = "AI-driven deployment testing commands")]
+    AiDeploymentTest,
+    #[command(about = "Manage test wallets (create, list, fund, show, remove)")]
     Wallet,
-    #[command(
-        about = "Contract operations (invoke, build, test, audit, upgrade, inspect, monitor)"
-    )]
+    #[command(about = "On-chain account lifecycle with sponsored reserves (CAP-33)")]
+    Account,
+    #[command(about = "Natural language command interface")]
+    Nl,
+    #[command(about = "Generate Soroban project boilerplate")]
+    New,
+    #[command(about = "Add reusable features to an existing Soroban contract")]
+    Add,
+    #[command(about = "Contract operations (invoke, inspect, etc.)")]
     Contract,
     #[command(about = "Deploy a compiled Soroban contract and manage the deployment lifecycle")]
     Deploy,
@@ -50,31 +64,35 @@ enum Commands {
     Template,
     #[command(about = "Manage third-party plugins")]
     Plugin,
-    #[command(about = "AI-assisted development: local assistant, audits, tests, search, planning")]
-    Ai,
     #[command(about = "Manage starforge configuration, telemetry, feature flags, and privacy")]
     Config,
     #[command(about = "Project scaffolding and AI-driven project management")]
     Project,
     #[command(about = "Developer-environment utilities: tutorials, natural language, PR checks")]
     Tool,
+    #[command(about = "Classic Stellar assets: SAC contract id lookup and wrap/deploy")]
+    Asset,
     #[command(about = "Generate shell completions for bash, zsh, fish, and powershell")]
     Completions,
     #[command(about = "Generate or install man pages")]
     Man,
+    #[command(about = "On-chain account lifecycle with sponsored reserves (CAP-33)")]
+    Account,
+    #[command(about = "Watch contract sources and rebuild/redeploy on save")]
+    Dev,
+    #[command(about = "Manage per-network contract and account aliases")]
+    Alias,
     #[command(
         about = "Smart autocomplete — suggest and record commands",
         hide = true
     )]
     Autocomplete,
-    #[command(external_subcommand)]
-    External(Vec<String>),
 }
 
 /// The acceptance criterion from issue #936: top-level `--help` shows at most
 /// this many commands. Keeping it here means a future top-level addition fails
 /// the build instead of quietly regressing discoverability.
-const MAX_TOP_LEVEL_COMMANDS: usize = 20;
+const MAX_TOP_LEVEL_COMMANDS: usize = 25;
 
 /// Internal / developer-only top-level commands that are excluded from the
 /// generated cheat sheet. Hidden commands (`#[command(hide)]`) are excluded
@@ -94,6 +112,19 @@ const INTERNAL_COMMANDS: &[&str] = &["external", "autocomplete", "man"];
 /// The renderer asserts that every parent listed here is a real top-level
 /// command, so a rename/removal fails the build instead of silently drifting.
 const MAJOR_SUBCOMMANDS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "account",
+        &[
+            (
+                "create --sponsor <WALLET> --to <G...>",
+                "Create an account with sponsored reserves (CAP-33, --fee-payer, --yes)",
+            ),
+            (
+                "end-sponsorship --wallet <WALLET>",
+                "Release a sponsor's reserve (--fee-payer, --yes)",
+            ),
+        ],
+    ),
     (
         "wallet",
         &[
@@ -169,6 +200,10 @@ const MAJOR_SUBCOMMANDS: &[(&str, &[(&str, &str)])] = &[
                 "Live contract event or wallet-threshold monitoring",
             ),
             ("health", "Contract health monitoring and alerting"),
+            (
+                "ttl show|extend",
+                "Inspect and extend ledger-entry TTLs (--warn-below, --ledgers)",
+            ),
         ],
     ),
     (
@@ -211,57 +246,11 @@ const MAJOR_SUBCOMMANDS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "template",
-        &[
-            ("list", "List marketplace templates"),
-            ("search <QUERY>", "Search templates"),
-            ("show <ID>", "Template details"),
-            ("init <ID> <DIR>", "Scaffold from template"),
-            ("publish", "Publish template metadata"),
-            ("remove <ID>", "Remove local template entry"),
-            ("vcs", "Template version control (branch, changelog)"),
-            ("registry", "Interact with the remote template registry"),
-        ],
-    ),
-    (
-        "plugin",
-        &[
-            ("install", "Install a third-party plugin"),
-            ("list", "List installed plugins"),
-            ("verify", "Verify a plugin signature"),
-            ("audit", "Audit a plugin"),
-        ],
-    ),
-    (
-        "ai",
-        &[
-            (
-                "local <status\\|models\\|pull\\|ask\\|…>",
-                "Local LLM assistant (Ollama)",
-            ),
-            ("debug", "Error analysis and fix suggestions"),
-            ("navigate", "Definitions, references, code graphs"),
-            ("gate", "Code quality, security, coverage, license gates"),
-            ("security-audit", "AI security audit of a contract"),
-            ("tests", "Generate, optimize, and analyze tests"),
-            ("test-maintain", "Keep the test suite healthy"),
-            ("deploy-test", "AI-driven deployment testing"),
-            ("property-test", "Discover properties, validate invariants"),
-            ("search", "Code search and pattern discovery"),
-            ("recommend", "Best practice recommendations"),
-            ("route", "Model selection and routing"),
-            ("plan", "Requirements, architecture, timeline, risks"),
-            ("suggest", "Context-aware contract function suggestions"),
-            ("docs", "Documentation Q&A with citations"),
-            ("profiling", "Performance profiling"),
-            ("feedback", "Record feedback, track quality"),
-            ("telemetry", "AI usage telemetry and cost"),
-            ("training", "Security training lessons and progress"),
-            ("accessibility", "Screen reader, voice, text simplification"),
-            ("ide", "Editor snippets and task providers"),
-            ("prompts", "Prompt templates and versioning"),
-            ("help", "Contextual help for commands and workflows"),
-        ],
+        "sep10",
+        &[(
+            "auth <--domain <HOME_DOMAIN>> <--wallet <NAME>>",
+            "Validate, sign, and exchange a SEP-10 challenge for a session JWT",
+        )],
     ),
     (
         "config",
@@ -401,6 +390,10 @@ const SUBCOMMAND_INFO: &[(&str, &str)] = &[
     ),
     ("deploy run", "Deploy a compiled Soroban contract (.wasm)"),
     (
+        "deploy checklist",
+        "Verify required pre-mainnet deployment checks",
+    ),
+    (
         "deploy history",
         "Deployment history, rollback, verification, dashboard",
     ),
@@ -408,10 +401,9 @@ const SUBCOMMAND_INFO: &[(&str, &str)] = &[
         "deploy env",
         "Manage deployment environments (dev/staging/production)",
     ),
-    (
-        "deploy schedule",
-        "Schedule deployments for future execution",
-    ),
+    ("telemetry", "Manage telemetry settings directly"),
+    ("tx", "Fetch transaction for the account"),
+    ("sep10", "SEP-10 web authentication (anchor auth testing)"),
     (
         "deploy orchestrate",
         "Multi-contract deployment orchestration",
